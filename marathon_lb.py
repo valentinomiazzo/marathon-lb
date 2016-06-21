@@ -30,6 +30,7 @@ from common import *
 from config import *
 from lrucache import *
 from utils import *
+from threading import Event, Thread
 
 import argparse
 import json
@@ -1294,6 +1295,14 @@ def get_arg_parser():
     parser = set_marathon_auth_args(parser)
     return parser
 
+#See http://stackoverflow.com/questions/22498038/improve-current-implementation-of-a-setinterval-python
+def call_repeatedly(interval, func, *args):
+    stopped = Event()
+    def loop():
+        while not stopped.wait(interval): # the first call is in `interval` secs
+            func(*args)
+    Thread(target=loop).start()
+    return stopped.set
 
 def run_server(marathon, listen_addr, callback_url, config_file, groups,
                bind_http_https, ssl_certs):
@@ -1302,8 +1311,14 @@ def run_server(marathon, listen_addr, callback_url, config_file, groups,
                                        groups,
                                        bind_http_https,
                                        ssl_certs)
+    def re_subscribe():
+        print("re_subscribe")
+        marathon.remove_subscriber(callback_url)
+        marathon.add_subscriber(callback_url)
+
     try:
         marathon.add_subscriber(callback_url)
+        cancel_future_calls = call_repeatedly(10, re_subscribe)
 
         # TODO(cmaloney): Switch to a sane http server
         # TODO(cmaloney): Good exception catching, etc
@@ -1322,7 +1337,7 @@ def run_server(marathon, listen_addr, callback_url, config_file, groups,
         httpd.serve_forever()
     finally:
         processor.stop()
-
+        cancel_future_calls()
 
 def clear_callbacks(marathon, callback_url):
     logger.info("Cleanup, removing subscription to {0}".format(callback_url))
